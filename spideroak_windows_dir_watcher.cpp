@@ -267,15 +267,17 @@ static void process_dir_watcher_results(
             wcs_buffer[slash_index] = L'\0';
         }
 
-        converted_chars = 0;
-        result = wcstombs_s(
-           &converted_chars,
-           mbcs_buffer,
-           PATH_BUFFER_SIZE,
-           wcs_buffer,
-           PATH_BUFFER_SIZE 
+        converted_chars = WideCharToMultiByte(
+            CP_UTF8, 
+            0, 
+            wcs_buffer, 
+            wcslen(wcs_buffer), 
+            mbcs_buffer, 
+            PATH_BUFFER_SIZE, 
+            NULL, 
+            NULL 
         );
-        if (converted_chars <= 1) {
+        if (converted_chars == 0) {
             ExitProcess(20);
         }
 
