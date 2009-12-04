@@ -11,7 +11,7 @@ So these dir watchers are very simple programs, keeping the complication in the 
 
 This program is launched by the SpiderOak back end program (the 'spider'). It reads a configuration file listing directories to by watched. And it reads an 'exclude' file (which may be empty) listing directories to be ignored. When it detects an event (or events), it writes a simple notification file to a specified directory.
 
-To build the executable you can use build_windows_dir_watcher.bat.
+To build the executable you can use build.cmd.
 
 We have included the python program launch_watcher.py for your convenience in testing. It launches the watcher the same way our spider program does.
 
@@ -53,7 +53,7 @@ $ cat ~/notification/00000002.txt
 
 Note that the notification is simply the directory where the event occurred. The Win32 API (and the .NET CLR) will provide a lot more information than that. Our goal is to keep the dir watcher as simple as possible. Of course, this is open source, if you want something more complicated go for it. (Please see our LICENSE).
 
-You need to distribute some Visual C++ runtime DLLs wiht this program. We have included the Visual Studio 2005 DLLs.
+You need to distribute some Visual C++ runtime DLLs wiht this program. 
 
 This is part of SpiderOak
 http://SpiderOak.com
