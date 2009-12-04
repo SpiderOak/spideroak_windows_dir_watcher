@@ -229,6 +229,7 @@ static void process_dir_watcher_results(
             continue;
         }
 
+	memset(wcs_buffer, '\0', sizeof wcs_buffer);
         wsprintf(          
             wcs_buffer,                     // LPTSTR pszDest,
             L"%s\\%s\n",                    // LPCTSTR pszFormat 
