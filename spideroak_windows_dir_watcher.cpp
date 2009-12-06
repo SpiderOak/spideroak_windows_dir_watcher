@@ -11,7 +11,7 @@
 #define MAX_DIRECTORIES 50   // The most directories we will watch
 #define MAX_EXCLUDES 50      // The most directories we will exclude
 #define MAX_HANDLES 64       // The most handles of  all kinds that we will wait for
-#define PATH_BUFFER_SIZE 3096
+#define PATH_BUFFER_SIZE 4096
 #define CHANGES_BUFFER_SIZE 64 * 1024
 
 typedef struct  { 
@@ -229,7 +229,7 @@ static void process_dir_watcher_results(
             continue;
         }
 
-	memset(wcs_buffer, '\0', sizeof wcs_buffer);
+	     memset(wcs_buffer, '\0', sizeof wcs_buffer);
         wsprintf(          
             wcs_buffer,                     // LPTSTR pszDest,
             L"%s\\%s\n",                    // LPCTSTR pszFormat 
