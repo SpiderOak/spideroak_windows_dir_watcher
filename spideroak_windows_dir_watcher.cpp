@@ -13,6 +13,7 @@
 #define MAX_HANDLES 64       // The most handles of  all kinds that we will wait for
 #define PATH_BUFFER_SIZE 4096
 #define CHANGES_BUFFER_SIZE 64 * 1024
+#define ERROR_BUFFER_SIZE 4096
 
 typedef struct  { 
     OVERLAPPED  overlap; 
@@ -48,12 +49,15 @@ static HANDLE handle_array[MAX_HANDLES];
 static DIR_WATCHER_P dir_watchers[MAX_DIRECTORIES];
 static DIR_PATH dir_paths[MAX_DIRECTORIES];
 static DIR_PATH exclude_paths[MAX_EXCLUDES];
+static DIR_PATH error_path;
+static FILE * error_file = NULL;
+static wchar_t error_buffer[ERROR_BUFFER_SIZE+1];
 
 //-----------------------------------------------------------------------------
 static void report_error(LPCWSTR message,  DWORD error_code) {
 //-----------------------------------------------------------------------------
     LPWSTR lpMsgBuf;
-    DWORD message_size; 
+    DWORD message_size;
 
     message_size = FormatMessage( 
         FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM,
@@ -65,7 +69,9 @@ static void report_error(LPCWSTR message,  DWORD error_code) {
         NULL 
     );
 
-    wprintf(L"%s 0x%04X %s\n",  message, error_code, lpMsgBuf);
+    _wfopen_s(&error_file, error_path, L"w");
+    fwprintf(error_file, L"%s 0x%04X %s\n",  message, error_code, lpMsgBuf);
+    fclose(error_file);
 
     // Free the buffer.
     LocalFree(lpMsgBuf);
@@ -80,11 +86,28 @@ static DWORD load_paths_to_array(DIR_PATH *path_array, DWORD max_array_size, LPC
     LPWSTR newline_p;
 
     if (_wfopen_s(&stream_p, path, L"r")) {
+    	_wfopen_s(&error_file, error_path, L"w");
+	_wcserror_s(error_buffer, sizeof error_buffer, errno); 
+    	fwprintf(
+	    error_file, 
+	    L"_wfopen(%s) failed: (%d) %s\n",  
+	    path,
+	    errno,
+	    error_buffer 
+	);
+    	fclose(error_file);
         ExitProcess(2);
     }
     for (entry_index=0; TRUE; entry_index++) {
 
         if (entry_index >= max_array_size) {
+    	    _wfopen_s(&error_file, error_path, L"w");
+    	    fwprintf(
+	        error_file, 
+	        L"_load_paths_to_array: too many paths (%d)\n",  
+	        entry_index
+	    );
+    	    fclose(error_file);
             ExitProcess(7);
         }
 
@@ -169,9 +192,9 @@ static BOOL parent_is_gone(DWORD parent_pid) {
 //-----------------------------------------------------------------------------
 // a safe replacement for wcsrchr which has an embarassing tendency to run
 // past the start of the string.
-static int safe_search_last_instance(LPCWSTR str_p, wchar_t target, size_t length) {
+static size_t safe_search_last_instance(LPCWSTR str_p, wchar_t target, size_t length) {
 //-----------------------------------------------------------------------------
-    int i;
+    size_t i;
 
     if (0 == length) {
         return -1;
@@ -198,12 +221,11 @@ static void process_dir_watcher_results(
     PFILE_NOTIFY_INFORMATION buffer_p;
     DWORD buffer_index;
     BOOL more;
-    int slash_index;
+    size_t slash_index;
     int compare_result;
     BOOL exclude;
     DWORD i;
     size_t converted_chars;
-    errno_t result;
     DWORD bytes_to_write;
     DWORD bytes_written;
     BOOL write_succeeded;
@@ -214,7 +236,15 @@ static void process_dir_watcher_results(
     buffer_index = 0;
     while (more) {
 
-        if ((buffer_index+sizeof(FILE_NOTIFY_INFORMATION)) >= buffer_size) {
+        if ((buffer_index+sizeof(FILE_NOTIFY_INFORMATION)) > buffer_size) {
+    	    _wfopen_s(&error_file, error_path, L"w");
+    	    fwprintf(
+	        error_file, 
+	        L"process_dir_watcher_results buffer overrun %d %d\n",  
+	        buffer_index,
+	        buffer_size
+	    );
+    	    fclose(error_file);
             ExitProcess(18);
         }
 
@@ -229,7 +259,7 @@ static void process_dir_watcher_results(
             continue;
         }
 
-	     memset(wcs_buffer, '\0', sizeof wcs_buffer);
+	memset(wcs_buffer, '\0', sizeof wcs_buffer);
         wsprintf(          
             wcs_buffer,                     // LPTSTR pszDest,
             L"%s\\%s\n",                    // LPCTSTR pszFormat 
@@ -272,13 +302,14 @@ static void process_dir_watcher_results(
             CP_UTF8, 
             0, 
             wcs_buffer, 
-            wcslen(wcs_buffer), 
+            (int) wcslen(wcs_buffer), 
             mbcs_buffer, 
             PATH_BUFFER_SIZE, 
             NULL, 
             NULL 
         );
         if (converted_chars == 0) {
+            report_error(L"WideCharToMultiByte", GetLastError());
             ExitProcess(20);
         }
 
@@ -301,6 +332,7 @@ static void process_dir_watcher_results(
             );
 
             if (INVALID_HANDLE_VALUE == hChangeLog) {
+            	report_error(L"CreateFile temp changelog", GetLastError());
                 ExitProcess(21);
             }
         }
@@ -315,6 +347,7 @@ static void process_dir_watcher_results(
             NULL                    // LPOVERLAPPED lpOverlapped
         );
         if (!write_succeeded) {
+            report_error(L"WriteFile temp changelog", GetLastError());
             ExitProcess(22);
         }
 
@@ -336,6 +369,17 @@ static void process_dir_watcher_results(
             notification_sequence
         );
         if (_wrename(temp_file_path, notification_file_path) != 0) {
+    	    _wfopen_s(&error_file, error_path, L"w");
+	    _wcserror_s(error_buffer, sizeof error_buffer, errno); 
+    	    fwprintf(
+	        error_file, 
+	        L"_wrename(%s, %s) failed: (%d) %s\n",  
+	        temp_file_path,
+		notification_file_path,
+	        errno,
+	        error_buffer 
+	    );
+    	    fclose(error_file);
             ExitProcess(24);
         }
     }
@@ -376,6 +420,9 @@ int APIENTRY _tWinMain(
     }
 
     parent_pid = _wtoi(args_p[1]);
+
+    wsprintf(error_path, L"%s\\error.txt", args_p[4]);
+    memset(error_buffer, '\0', sizeof wcs_buffer);
 
     directory_count = load_paths_to_array(dir_paths, MAX_DIRECTORIES, args_p[2]);
     if (0 == directory_count) {
@@ -421,6 +468,7 @@ int APIENTRY _tWinMain(
         L"orphan_timer"
     );
     if (NULL == handle_array[handle_count]) {
+        report_error(L"CreateWaitableTimer orphan timer", GetLastError());
         ExitProcess(23);
     }
 
@@ -438,17 +486,8 @@ int APIENTRY _tWinMain(
         FALSE // do not restore a system in suspended power conservation mode 
     );    
     if (!set_result) {
-        report_error(L"SetWaitableTimer", GetLastError());
+        report_error(L"SetWaitableTimer orphan timer", GetLastError());
         ExitProcess(13);
-    }
-
-    handle_array[handle_count] = CreateWaitableTimer(
-        NULL,
-        FALSE,
-        L"orphan_timer"
-    );
-    if (NULL == handle_array[handle_count]) {
-        ExitProcess(1);
     }
 
     while (TRUE) {
@@ -461,6 +500,7 @@ int APIENTRY _tWinMain(
         );
 
         if (WAIT_FAILED == wait_result) {
+            report_error(L"WaitForMultipleObjects", GetLastError());
             ExitProcess(13);
         }
 
@@ -482,6 +522,7 @@ int APIENTRY _tWinMain(
         );    
     
         if (!get_successful) {
+            report_error(L"GetOverlappedResult", GetLastError());
             ExitProcess(15);
         }
 
