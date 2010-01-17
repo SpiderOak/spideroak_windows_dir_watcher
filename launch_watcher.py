@@ -15,6 +15,7 @@ def main(executeable_path, config_path, exclude_path, notification_path):
         exclude_path,
 	    notification_path, 
     ]
+    print "Launching", args
     process = subprocess.Popen(args)
     print "process started pid =", process.pid
     process.wait()

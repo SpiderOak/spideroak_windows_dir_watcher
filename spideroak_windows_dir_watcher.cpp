@@ -295,7 +295,7 @@ static void process_dir_watcher_results(
         slash_index = safe_search_last_instance(wcs_buffer, L'\\', wcslen(wcs_buffer));
         if (slash_index != -1) {
             wcs_buffer[slash_index] = L'\n';
-            wcs_buffer[slash_index] = L'\0';
+            wcs_buffer[slash_index+1] = L'\0';
         }
 
         converted_chars = WideCharToMultiByte(
