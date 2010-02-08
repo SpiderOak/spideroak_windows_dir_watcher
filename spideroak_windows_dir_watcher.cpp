@@ -8,21 +8,25 @@
 #include "psapi.h" // for EnumProcesses
 
 
-#define MAX_DIRECTORIES 50   // The most directories we will watch
-#define MAX_EXCLUDES 50      // The most directories we will exclude
-#define MAX_HANDLES 64       // The most handles of  all kinds that we will wait for
 #define PATH_BUFFER_SIZE 4096
 #define CHANGES_BUFFER_SIZE 64 * 1024
 #define ERROR_BUFFER_SIZE 4096
-
-typedef struct  { 
-    OVERLAPPED  overlap; 
-    HANDLE      hDirectory; 
-    DWORD       directory_index;
-    BYTE        changes_buffer[CHANGES_BUFFER_SIZE];
-} DIR_WATCHER, *DIR_WATCHER_P;
+#define TIMEOUT_MILLESECONDS 2000
 
 typedef wchar_t DIR_PATH[PATH_BUFFER_SIZE+1];
+
+struct watch_entry {
+    OVERLAPPED            overlap; 
+    DIR_PATH              dir_path;
+    HANDLE                hDirectory; 
+    BYTE                  changes_buffer[CHANGES_BUFFER_SIZE];
+    struct watch_entry   *next_p;
+}; 
+
+struct exclude_entry {
+    DIR_PATH              dir_path;
+    struct exclude_entry  *next_p;
+}; 
 
 static const DWORD DIRECTORY_CHANGES_FILTER = 
     FILE_NOTIFY_CHANGE_FILE_NAME 
@@ -45,13 +49,11 @@ static wchar_t temp_file_path[PATH_BUFFER_SIZE];
 static DWORD notification_sequence = 0;
 static wchar_t notification_file_path[PATH_BUFFER_SIZE];
 
-static HANDLE handle_array[MAX_HANDLES];
-static DIR_WATCHER_P dir_watchers[MAX_DIRECTORIES];
-static DIR_PATH dir_paths[MAX_DIRECTORIES];
-static DIR_PATH exclude_paths[MAX_EXCLUDES];
 static DIR_PATH error_path;
 static FILE * error_file = NULL;
 static wchar_t error_buffer[ERROR_BUFFER_SIZE+1];
+static struct watch_entry *watch_entry_list_p = NULL;
+static struct exclude_entry *exclude_entry_list_p = NULL;
 
 //-----------------------------------------------------------------------------
 static void report_error(LPCWSTR message,  DWORD error_code) {
@@ -79,11 +81,40 @@ static void report_error(LPCWSTR message,  DWORD error_code) {
 } // static void report_error(LPCWSTR message,  DWORD error_code)
 
 //-----------------------------------------------------------------------------
-static DWORD load_paths_to_array(DIR_PATH *path_array, DWORD max_array_size, LPCTSTR path) {
+static start_watch(struct watch_entry * watch_entry_p) {
+//-----------------------------------------------------------------------------
+    BOOL start_read_result;
+
+    memset(&watch_entry_p->overlap, '\0', sizeof watch_entry_p->overlap);	
+
+    // start an overlapped 'read' to look for a filesystem change
+    start_read_result = ReadDirectoryChangesW(
+	watch_entry_p->hDirectory,
+	watch_entry_p->changes_buffer,
+	sizeof(watch_entry_p->changes_buffer),
+	TRUE,
+	DIRECTORY_CHANGES_FILTER,
+	NULL,
+	(LPOVERLAPPED) watch_entry_p,
+	NULL
+    );
+
+    if (!start_read_result) {
+	report_error(L"ReadDirectoryChangesW", GetLastError());
+	ExitProcess(10);
+    }
+
+} // start_watch
+
+//-----------------------------------------------------------------------------
+static void load_paths_to_watch(LPCTSTR path, HANDLE completion_port_h) {
 //-----------------------------------------------------------------------------
     FILE * stream_p;
-    DWORD entry_index;
+    wchar_t *get_result;
+    HANDLE create_result;
     LPWSTR newline_p;
+    struct watch_entry **link_p;
+    struct watch_entry * next_p;
 
     if (_wfopen_s(&stream_p, path, L"r")) {
     	_wfopen_s(&error_file, error_path, L"w");
@@ -98,67 +129,163 @@ static DWORD load_paths_to_array(DIR_PATH *path_array, DWORD max_array_size, LPC
     	fclose(error_file);
         ExitProcess(2);
     }
-    for (entry_index=0; TRUE; entry_index++) {
 
-        if (entry_index >= max_array_size) {
-    	    _wfopen_s(&error_file, error_path, L"w");
-    	    fwprintf(
-	        error_file, 
-	        L"_load_paths_to_array: too many paths (%d)\n",  
-	        entry_index
-	    );
-    	    fclose(error_file);
-            ExitProcess(7);
+    link_p = &watch_entry_list_p;
+   
+    while (1) {
+
+        // create a watch entry
+        next_p = (struct watch_entry *) HeapAlloc(
+            GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(struct watch_entry)
+        );
+
+        // read in the path to watch from config.txt
+        get_result = \
+            fgetws(next_p->dir_path, PATH_BUFFER_SIZE, stream_p);
+
+        if (NULL == get_result) {
+            if (0 == ferror(stream_p)) {
+                HeapFree(GetProcessHeap(), 0, next_p);
+                break;
+            } 
+            _wfopen_s(&error_file, error_path, L"w");
+            _wcserror_s(error_buffer, sizeof error_buffer, errno); 
+            fwprintf(
+                error_file, 
+                L"fgetws(%s) failed: (%d) %s\n",  
+                path,
+                errno,
+                error_buffer 
+            );
+            fclose(error_file);
+            ExitProcess(2);
         }
 
-        if (NULL == fgetws(path_array[entry_index], PATH_BUFFER_SIZE, stream_p)) {
-            break;
-        }
-
-        newline_p = wcschr(path_array[entry_index], L'\n');
+        // clean out the newline, if there is one
+        newline_p = wcschr(next_p->dir_path, L'\n');
         if (newline_p != NULL) {
             *newline_p = L'\0'; 
         }
-    }
+
+        // open a file handle to watch the directory in overlapped mode
+        next_p->hDirectory = CreateFile(
+            next_p->dir_path,
+            FILE_LIST_DIRECTORY,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            NULL,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
+            NULL
+        );
+
+        // 2009-03-11 dougfort -- if we can't create this file, 
+	// assume it is a top-level directory
+        // which no longer exists; so ignore it and move on.
+        if (INVALID_HANDLE_VALUE == next_p->hDirectory) {
+            report_error(L"CreateFile", GetLastError());
+            continue;
+        }
+
+        // add this file handle to the IO Complete port
+        create_result = CreateIoCompletionPort(
+            next_p->hDirectory,         // FileHandle,
+            completion_port_h,          // ExistingCompletionPort,
+            0,                          // CompletionKey,
+            0                           // NumberOfConcurrentThreads
+        );
+
+        if (NULL == create_result) {
+            report_error(L"CreateIOCompletionPort (add)", GetLastError());
+            ExitProcess(102);
+        }
+
+        if (create_result != completion_port_h) {
+            ExitProcess(103);
+        }
+
+	start_watch(next_p);
+
+        // add this entry to the list
+        *link_p = next_p;
+
+	// point to the new entry's next pointer 
+        link_p = &(*link_p)->next_p;
+    } // while(1)
 
     fclose(stream_p);
 
-    return entry_index;
-
-} // load_paths_to_array
+} // load_paths_to_watch
 
 //-----------------------------------------------------------------------------
-static DIR_WATCHER_P start_watching_directory(
-    HANDLE hDirectory, 
-    DWORD directory_index
-) {
+static void load_paths_to_exclude(LPCTSTR path) {
 //-----------------------------------------------------------------------------
-    DIR_WATCHER_P dir_watcher_p;
-    BOOL start_read_result;
+    FILE * stream_p;
+    wchar_t *get_result;
+    LPWSTR newline_p;
+    struct exclude_entry **link_p;
+    struct exclude_entry * next_p;
 
-    dir_watcher_p = (DIR_WATCHER_P) HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(DIR_WATCHER));
-    dir_watcher_p->overlap.hEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
-    dir_watcher_p->hDirectory = hDirectory;
-    dir_watcher_p->directory_index = directory_index;
-
-    start_read_result = ReadDirectoryChangesW(
-        dir_watcher_p->hDirectory,                    // HANDLE hDirectory,
-        dir_watcher_p->changes_buffer,                // LPVOID lpBuffer,
-        sizeof(dir_watcher_p->changes_buffer),        // DWORD nBufferLength,
-        TRUE,                                         // BOOL bWatchSubtree,
-        DIRECTORY_CHANGES_FILTER,                     // DWORD dwNotifyFilter,
-        NULL,                                         // LPDWORD lpBytesReturned,
-        (LPOVERLAPPED) dir_watcher_p,                 // LPOVERLAPPED lpOverlapped,
-        NULL                                          // LPOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine
-    );
-
-    if (!start_read_result) {
-        report_error(L"ReadDirectoryChangesW", GetLastError());
-        ExitProcess(10);
+    if (_wfopen_s(&stream_p, path, L"r")) {
+    	_wfopen_s(&error_file, error_path, L"w");
+	_wcserror_s(error_buffer, sizeof error_buffer, errno); 
+    	fwprintf(
+	    error_file, 
+	    L"_wfopen(%s) failed: (%d) %s\n",  
+	    path,
+	    errno,
+	    error_buffer 
+	);
+    	fclose(error_file);
+        ExitProcess(2);
     }
 
-    return dir_watcher_p;
-} // start_watching_directory
+    link_p = &exclude_entry_list_p;
+   
+    while (1) {
+
+        // create an exclude entry
+        next_p = (struct exclude_entry *) HeapAlloc(
+            GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(struct exclude_entry)
+        );
+
+        // read in the path to watch from config.txt
+        get_result = \
+            fgetws(next_p->dir_path, PATH_BUFFER_SIZE, stream_p);
+
+        if (NULL == get_result) {
+            if (0 == ferror(stream_p)) {
+                HeapFree(GetProcessHeap(), 0, next_p);
+                break;
+            } 
+            _wfopen_s(&error_file, error_path, L"w");
+            _wcserror_s(error_buffer, sizeof error_buffer, errno); 
+            fwprintf(
+                error_file, 
+                L"fgetws(%s) failed: (%d) %s\n",  
+                path,
+                errno,
+                error_buffer 
+            );
+            fclose(error_file);
+            ExitProcess(2);
+        }
+
+        // clean out the newline, if there is one
+        newline_p = wcschr(next_p->dir_path, L'\n');
+        if (newline_p != NULL) {
+            *newline_p = L'\0'; 
+        }
+
+        // add this entry to the list
+        *link_p = next_p;
+
+	// point to the new entry's next pointer 
+        link_p = &(*link_p)->next_p;
+    } // while(1)
+
+    fclose(stream_p);
+
+} // load_paths_to_exclude
 
 //------------------------------------------------------------------------------
 static BOOL parent_is_gone(DWORD parent_pid) {
@@ -192,7 +319,9 @@ static BOOL parent_is_gone(DWORD parent_pid) {
 //-----------------------------------------------------------------------------
 // a safe replacement for wcsrchr which has an embarassing tendency to run
 // past the start of the string.
-static size_t safe_search_last_instance(LPCWSTR str_p, wchar_t target, size_t length) {
+static size_t safe_search_last_instance(
+    LPCWSTR str_p, wchar_t target, size_t length
+) {
 //-----------------------------------------------------------------------------
     size_t i;
 
@@ -214,7 +343,6 @@ static void process_dir_watcher_results(
     LPBYTE          buffer,
     DWORD           buffer_size,
     LPCWSTR         dir_path,
-    DWORD           exclude_count,
     LPCWSTR         notification_path) {
 //-----------------------------------------------------------------------------
     HANDLE hChangeLog;
@@ -224,7 +352,7 @@ static void process_dir_watcher_results(
     size_t slash_index;
     int compare_result;
     BOOL exclude;
-    DWORD i;
+    struct exclude_entry * exclude_entry_p;
     size_t converted_chars;
     DWORD bytes_to_write;
     DWORD bytes_written;
@@ -269,11 +397,15 @@ static void process_dir_watcher_results(
 
         // We must check for excludes before pruning the directory
         exclude = FALSE;
-        for (i=0; i < exclude_count; i++) {
+        for (
+	    exclude_entry_p=exclude_entry_list_p; 
+	    exclude_entry_p != NULL; 
+	    exclude_entry_p = exclude_entry_p->next_p
+	) {
             compare_result = _wcsnicmp(
                 (LPCWSTR) wcs_buffer,
-                (LPCWSTR) exclude_paths[i],
-                wcslen(exclude_paths[i]) 
+                (LPCWSTR) exclude_entry_p->dir_path,
+                wcslen(exclude_entry_p->dir_path) 
             );
             if (0 == compare_result) {
                 exclude = TRUE;
@@ -290,9 +422,12 @@ static void process_dir_watcher_results(
             continue;
         }
 
-        // We want the directory where the event took place, for consistency with OSX.
-        // So, we find the last '\' (if any) in the string and replace it with '\0'
-        slash_index = safe_search_last_instance(wcs_buffer, L'\\', wcslen(wcs_buffer));
+        // We want the directory where the event took place, 
+        // for consistency with OSX.
+        // So, we find the last '\' (if any) in the string 
+        // and replace it with '\0'
+        slash_index = 
+            safe_search_last_instance(wcs_buffer, L'\\', wcslen(wcs_buffer));
         if (slash_index != -1) {
             wcs_buffer[slash_index] = L'\n';
             wcs_buffer[slash_index+1] = L'\0';
@@ -325,7 +460,7 @@ static void process_dir_watcher_results(
                 temp_file_path,           // LPCTSTR lpFileName,
                 GENERIC_WRITE,            // DWORD dwDesiredAccess,
                 0,                        // DWORD dwShareMode,
-                NULL,                     // LPSECURITY_ATTRIBUTES lpSecurityAttributes,
+                NULL,                     // LPSECURITY_ATTRIBUTES
                 CREATE_ALWAYS,            // DWORD dwCreationDisposition,
                 FILE_ATTRIBUTE_NORMAL,    // DWORD dwFlagsAndAttributes,
                 NULL                      // HANDLE hTemplateFile
@@ -386,32 +521,23 @@ static void process_dir_watcher_results(
 
 } // static void process_dir_watcher_results(
 
-//------------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 int APIENTRY _tWinMain(
     HINSTANCE hInstance,
     HINSTANCE hPrevInstance,
     LPTSTR    lpCmdLine,
     int       nCmdShow
 ) {
-//------------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
     LPTSTR command_line = GetCommandLine();
     int num_args;
     int parent_pid;
-    DWORD directory_count;
-    DWORD exclude_count;
+    HANDLE completion_port_h;
     LPWSTR * args_p;
-    HANDLE hDirectory;
-    DWORD handle_count;
-    DWORD directory_index;
-    DWORD wait_result;
-    DWORD handle_index;
-    DIR_WATCHER_P dir_watcher_p;
-    DWORD timer_index;
-    LARGE_INTEGER timer_start;
-    LONG timer_period;
-    BOOL set_result;
     BOOL get_successful;
-    DWORD bytes_returned = 0;
+    DWORD bytes_returned;
+    struct watch_entry * watch_entry_p;
+    DWORD completion_key;
 
     args_p = CommandLineToArgvW(command_line, &num_args);
 
@@ -424,136 +550,63 @@ int APIENTRY _tWinMain(
     wsprintf(error_path, L"%s\\error.txt", args_p[4]);
     memset(error_buffer, '\0', sizeof wcs_buffer);
 
-    directory_count = load_paths_to_array(dir_paths, MAX_DIRECTORIES, args_p[2]);
-    if (0 == directory_count) {
-        return 0;
-    }
-
-    exclude_count = load_paths_to_array(exclude_paths, MAX_EXCLUDES, args_p[3]);
-
-    handle_count = 0;
-    for (directory_index=0; directory_index < directory_count; directory_index++) {
-
-        hDirectory = CreateFile(
-            dir_paths[directory_index],                         // LPCTSTR lpFileName,
-            FILE_LIST_DIRECTORY,                                // DWORD dwDesiredAccess,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,                 // DWORD dwShareMode,
-            NULL,                                               // LPSECURITY_ATTRIBUTES lpSecurityAttributes,
-            OPEN_EXISTING,                                      // DWORD dwCreationDisposition,
-            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,  // DWORD dwFlagsAndAttributes,
-            NULL                                                // HANDLE hTemplateFile
-        );
-
-        // 2009-03-11 dougfort -- if we can't create this file, assume it is a top-level directory
-        // which no longer exists; so ignore it and move on.
-        if (INVALID_HANDLE_VALUE == hDirectory) {
-            report_error(L"CreateFile", GetLastError());
-            continue;
-        }
-
-        dir_watchers[handle_count] = start_watching_directory(hDirectory, directory_index);
-        handle_array[handle_count] = dir_watchers[handle_count]->overlap.hEvent;
-        handle_count++;
-
-    } //   for (handle_count=0; tail_p != NULL; handle_count++)
-
-    // If we don't have any valid directories to watch, there's no point in running
-    if (0 == handle_count) {
-        return 0;
-    }
-
-    handle_array[handle_count] = CreateWaitableTimer(
-        NULL,
-        FALSE,
-        L"orphan_timer"
+    // create the basic completion port
+    completion_port_h = CreateIoCompletionPort(
+        INVALID_HANDLE_VALUE,   // FileHandle,
+        NULL,                   // ExistingCompletionPort,
+        0,                      // CompletionKey,
+        0                       // NumberOfConcurrentThreads
     );
-    if (NULL == handle_array[handle_count]) {
-        report_error(L"CreateWaitableTimer orphan timer", GetLastError());
-        ExitProcess(23);
+    if (NULL == completion_port_h) {
+        report_error(L"CreateIoCompletionPort", GetLastError());
+        ExitProcess(100);
     }
 
-    timer_index = handle_count;
-    handle_count++;
-
-    memset(&timer_start, '\0', sizeof timer_start);
-    timer_period = 3 * 1000; //3 seconds
-    set_result = SetWaitableTimer(
-        handle_array[timer_index],
-        &timer_start,
-        timer_period,
-        NULL,
-        NULL,
-        FALSE // do not restore a system in suspended power conservation mode 
-    );    
-    if (!set_result) {
-        report_error(L"SetWaitableTimer orphan timer", GetLastError());
-        ExitProcess(13);
+    load_paths_to_watch(args_p[2], completion_port_h);
+    if (NULL == watch_entry_list_p) {
+        return 0;
     }
+
+    load_paths_to_exclude(args_p[3]);
 
     while (TRUE) {
 
-        wait_result = WaitForMultipleObjects(
-            handle_count,  // DWORD nCount,
-            handle_array,  //const HANDLE* lpHandles,
-            FALSE,         // BOOL bWaitAll,
-            INFINITE       // DWORD dwMilliseconds
-        );
+	watch_entry_p = NULL;
+	get_successful = GetQueuedCompletionStatus(
+	    completion_port_h,
+	    &bytes_returned,
+	    &completion_key,
+	    (LPOVERLAPPED *) &watch_entry_p,
+	    TIMEOUT_MILLESECONDS
+	);
 
-        if (WAIT_FAILED == wait_result) {
-            report_error(L"WaitForMultipleObjects", GetLastError());
-            ExitProcess(13);
-        }
+	if (!get_successful) {
+	    if (NULL == watch_entry_p) { 
+		// timeout: make sure our parent is still running
+            	if (parent_is_gone(parent_pid)) {
+                    break;
+                } else {
+		    continue;
+		}
+	    }
+            report_error(L"GetQueuedCompletionStatus", GetLastError());
+	    ExitProcess(115);
+	}
 
-        handle_index = wait_result - WAIT_OBJECT_0;
-        if (handle_index == timer_index) {
-            if (parent_is_gone(parent_pid)) {
-                break;
-            }
-            continue;
-        }
-
-        dir_watcher_p = dir_watchers[handle_index];
-
-        get_successful = GetOverlappedResult(
-            dir_watcher_p->hDirectory,           // HANDLE hFile,
-            (LPOVERLAPPED) dir_watcher_p,        // LPOVERLAPPED lpOverlapped,
-            &bytes_returned,                     // LPDWORD lpNumberOfBytesTransferred,
-            FALSE                                // BOOL bWait
-        );    
-    
-        if (!get_successful) {
-            report_error(L"GetOverlappedResult", GetLastError());
-            ExitProcess(15);
-        }
-
-        // start a new watcher immediately
-        dir_watchers[handle_index] = start_watching_directory(
-            dir_watcher_p->hDirectory, 
-            dir_watcher_p->directory_index
-        );
-        handle_array[handle_index] = dir_watchers[handle_index]->overlap.hEvent;
+        // start a new watch
+	start_watch(watch_entry_p);
 
         // then report the results of the one that just completed
         if (bytes_returned > 0) {
             process_dir_watcher_results(
-                dir_watcher_p->changes_buffer, 
+                watch_entry_p->changes_buffer, 
                 bytes_returned,
-                dir_paths[dir_watcher_p->directory_index], 
-                exclude_count, 
+                watch_entry_p->dir_path, 
                 args_p[4]
             );
         }
 
-        CloseHandle(dir_watcher_p->overlap.hEvent);
-        HeapFree(GetProcessHeap(), 0, dir_watcher_p);
-
     } // while (TRUE) {
-
-    for (handle_index=0; handle_index < timer_index; ++handle_index) {
-        CloseHandle(dir_watchers[handle_index]->hDirectory);
-        CloseHandle(dir_watchers[handle_index]->overlap.hEvent);
-        HeapFree(GetProcessHeap(), 0, dir_watchers[handle_index]);
-    }
 
     // We get here if we think the parent is gone
     return 0;
