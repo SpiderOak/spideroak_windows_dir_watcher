@@ -9,7 +9,7 @@
 
 
 #define PATH_BUFFER_SIZE 4096
-#define CHANGES_BUFFER_SIZE 64 * 1024
+#define CHANGES_BUFFER_SIZE 128 * 1024
 #define ERROR_BUFFER_SIZE 4096
 #define TIMEOUT_MILLESECONDS 2000
 
@@ -89,19 +89,19 @@ static start_watch(struct watch_entry * watch_entry_p) {
 
     // start an overlapped 'read' to look for a filesystem change
     start_read_result = ReadDirectoryChangesW(
-	watch_entry_p->hDirectory,
-	watch_entry_p->changes_buffer,
-	sizeof(watch_entry_p->changes_buffer),
-	TRUE,
-	DIRECTORY_CHANGES_FILTER,
-	NULL,
-	(LPOVERLAPPED) watch_entry_p,
-	NULL
+        watch_entry_p->hDirectory,
+        watch_entry_p->changes_buffer,
+        sizeof(watch_entry_p->changes_buffer),
+        TRUE,
+        DIRECTORY_CHANGES_FILTER,
+        NULL,
+        (LPOVERLAPPED) watch_entry_p,
+        NULL
     );
 
     if (!start_read_result) {
-	report_error(L"ReadDirectoryChangesW", GetLastError());
-	ExitProcess(10);
+        report_error(L"ReadDirectoryChangesW", GetLastError());
+        ExitProcess(10);
     }
 
 } // start_watch
@@ -117,16 +117,16 @@ static void load_paths_to_watch(LPCTSTR path, HANDLE completion_port_h) {
     struct watch_entry * next_p;
 
     if (_wfopen_s(&stream_p, path, L"r")) {
-    	_wfopen_s(&error_file, error_path, L"w");
-	_wcserror_s(error_buffer, sizeof error_buffer, errno); 
-    	fwprintf(
-	    error_file, 
-	    L"_wfopen(%s) failed: (%d) %s\n",  
-	    path,
-	    errno,
-	    error_buffer 
-	);
-    	fclose(error_file);
+        _wfopen_s(&error_file, error_path, L"w");
+        _wcserror_s(error_buffer, sizeof error_buffer, errno); 
+        fwprintf(
+            error_file, 
+            L"_wfopen(%s) failed: (%d) %s\n",  
+            path,
+            errno,
+            error_buffer 
+        );
+        fclose(error_file);
         ExitProcess(2);
     }
 
@@ -179,7 +179,7 @@ static void load_paths_to_watch(LPCTSTR path, HANDLE completion_port_h) {
         );
 
         // 2009-03-11 dougfort -- if we can't create this file, 
-	// assume it is a top-level directory
+        // assume it is a top-level directory
         // which no longer exists; so ignore it and move on.
         if (INVALID_HANDLE_VALUE == next_p->hDirectory) {
             report_error(L"CreateFile", GetLastError());
@@ -203,12 +203,12 @@ static void load_paths_to_watch(LPCTSTR path, HANDLE completion_port_h) {
             ExitProcess(103);
         }
 
-	start_watch(next_p);
+        start_watch(next_p);
 
         // add this entry to the list
         *link_p = next_p;
 
-	// point to the new entry's next pointer 
+        // point to the new entry's next pointer 
         link_p = &(*link_p)->next_p;
     } // while(1)
 
@@ -226,16 +226,16 @@ static void load_paths_to_exclude(LPCTSTR path) {
     struct exclude_entry * next_p;
 
     if (_wfopen_s(&stream_p, path, L"r")) {
-    	_wfopen_s(&error_file, error_path, L"w");
-	_wcserror_s(error_buffer, sizeof error_buffer, errno); 
-    	fwprintf(
-	    error_file, 
-	    L"_wfopen(%s) failed: (%d) %s\n",  
-	    path,
-	    errno,
-	    error_buffer 
-	);
-    	fclose(error_file);
+        _wfopen_s(&error_file, error_path, L"w");
+        _wcserror_s(error_buffer, sizeof error_buffer, errno); 
+        fwprintf(
+            error_file, 
+            L"_wfopen(%s) failed: (%d) %s\n",  
+            path,
+            errno,
+            error_buffer 
+        );
+        fclose(error_file);
         ExitProcess(2);
     }
 
@@ -279,7 +279,7 @@ static void load_paths_to_exclude(LPCTSTR path) {
         // add this entry to the list
         *link_p = next_p;
 
-	// point to the new entry's next pointer 
+        // point to the new entry's next pointer 
         link_p = &(*link_p)->next_p;
     } // while(1)
 
@@ -365,14 +365,14 @@ static void process_dir_watcher_results(
     while (more) {
 
         if ((buffer_index+sizeof(FILE_NOTIFY_INFORMATION)) > buffer_size) {
-    	    _wfopen_s(&error_file, error_path, L"w");
-    	    fwprintf(
-	        error_file, 
-	        L"process_dir_watcher_results buffer overrun %d %d\n",  
-	        buffer_index,
-	        buffer_size
-	    );
-    	    fclose(error_file);
+            _wfopen_s(&error_file, error_path, L"w");
+            fwprintf(
+                error_file, 
+                L"process_dir_watcher_results buffer overrun %d %d\n",  
+                buffer_index,
+                buffer_size
+            );
+            fclose(error_file);
             ExitProcess(18);
         }
 
@@ -387,7 +387,7 @@ static void process_dir_watcher_results(
             continue;
         }
 
-	memset(wcs_buffer, '\0', sizeof wcs_buffer);
+        memset(wcs_buffer, '\0', sizeof wcs_buffer);
         wsprintf(          
             wcs_buffer,                     // LPTSTR pszDest,
             L"%s\\%s\n",                    // LPCTSTR pszFormat 
@@ -398,10 +398,10 @@ static void process_dir_watcher_results(
         // We must check for excludes before pruning the directory
         exclude = FALSE;
         for (
-	    exclude_entry_p=exclude_entry_list_p; 
-	    exclude_entry_p != NULL; 
-	    exclude_entry_p = exclude_entry_p->next_p
-	) {
+            exclude_entry_p=exclude_entry_list_p; 
+            exclude_entry_p != NULL; 
+            exclude_entry_p = exclude_entry_p->next_p
+        ) {
             compare_result = _wcsnicmp(
                 (LPCWSTR) wcs_buffer,
                 (LPCWSTR) exclude_entry_p->dir_path,
@@ -467,7 +467,7 @@ static void process_dir_watcher_results(
             );
 
             if (INVALID_HANDLE_VALUE == hChangeLog) {
-            	report_error(L"CreateFile temp changelog", GetLastError());
+                report_error(L"CreateFile temp changelog", GetLastError());
                 ExitProcess(21);
             }
         }
@@ -504,17 +504,17 @@ static void process_dir_watcher_results(
             notification_sequence
         );
         if (_wrename(temp_file_path, notification_file_path) != 0) {
-    	    _wfopen_s(&error_file, error_path, L"w");
-	    _wcserror_s(error_buffer, sizeof error_buffer, errno); 
-    	    fwprintf(
-	        error_file, 
-	        L"_wrename(%s, %s) failed: (%d) %s\n",  
-	        temp_file_path,
-		notification_file_path,
-	        errno,
-	        error_buffer 
-	    );
-    	    fclose(error_file);
+            _wfopen_s(&error_file, error_path, L"w");
+            _wcserror_s(error_buffer, sizeof error_buffer, errno); 
+            fwprintf(
+                error_file, 
+                L"_wrename(%s, %s) failed: (%d) %s\n",  
+                temp_file_path,
+                notification_file_path,
+                errno,
+                error_buffer 
+            );
+            fclose(error_file);
             ExitProcess(24);
         }
     }
@@ -571,32 +571,29 @@ int APIENTRY _tWinMain(
 
     while (TRUE) {
 
-	watch_entry_p = NULL;
-	get_successful = GetQueuedCompletionStatus(
-	    completion_port_h,
-	    &bytes_returned,
-	    &completion_key,
-	    (LPOVERLAPPED *) &watch_entry_p,
-	    TIMEOUT_MILLESECONDS
-	);
+        watch_entry_p = NULL;
+        get_successful = GetQueuedCompletionStatus(
+            completion_port_h,
+            &bytes_returned,
+            &completion_key,
+            (LPOVERLAPPED *) &watch_entry_p,
+            TIMEOUT_MILLESECONDS
+        );
 
-	if (!get_successful) {
-	    if (NULL == watch_entry_p) { 
-		// timeout: make sure our parent is still running
-            	if (parent_is_gone(parent_pid)) {
+        if (!get_successful) {
+            if (NULL == watch_entry_p) { 
+                // timeout: make sure our parent is still running
+                if (parent_is_gone(parent_pid)) {
                     break;
                 } else {
-		    continue;
-		}
-	    }
+                    continue;
+                }
+            }
             report_error(L"GetQueuedCompletionStatus", GetLastError());
-	    ExitProcess(115);
-	}
+            ExitProcess(115);
+        }
 
-        // start a new watch
-	start_watch(watch_entry_p);
-
-        // then report the results of the one that just completed
+        // report the results of the one that just completed
         if (bytes_returned > 0) {
             process_dir_watcher_results(
                 watch_entry_p->changes_buffer, 
@@ -605,6 +602,9 @@ int APIENTRY _tWinMain(
                 args_p[4]
             );
         }
+
+        // start a new watch
+        start_watch(watch_entry_p);
 
     } // while (TRUE) {
 
