@@ -44,6 +44,7 @@ static const DWORD valid_action =
     | FILE_ACTION_RENAMED_OLD_NAME 
     | FILE_ACTION_RENAMED_NEW_NAME; 
 static wchar_t wcs_buffer[PATH_BUFFER_SIZE];
+static wchar_t long_name_buffer[PATH_BUFFER_SIZE];
 static char mbcs_buffer[PATH_BUFFER_SIZE];
 static wchar_t temp_file_path[PATH_BUFFER_SIZE];
 static DWORD notification_sequence = 0;
@@ -357,6 +358,7 @@ static void process_dir_watcher_results(
     DWORD bytes_to_write;
     DWORD bytes_written;
     BOOL write_succeeded;
+    DWORD long_name_result;
 
     hChangeLog = INVALID_HANDLE_VALUE;
 
@@ -390,7 +392,7 @@ static void process_dir_watcher_results(
         memset(wcs_buffer, '\0', sizeof wcs_buffer);
         wsprintf(          
             wcs_buffer,                     // LPTSTR pszDest,
-            L"%s\\%s\n",                    // LPCTSTR pszFormat 
+            L"%s\\%s",                    // LPCTSTR pszFormat 
             dir_path,
             buffer_p->FileName
         );
@@ -429,15 +431,30 @@ static void process_dir_watcher_results(
         slash_index = 
             safe_search_last_instance(wcs_buffer, L'\\', wcslen(wcs_buffer));
         if (slash_index != -1) {
-            wcs_buffer[slash_index] = L'\n';
-            wcs_buffer[slash_index+1] = L'\0';
+            wcs_buffer[slash_index] = L'\0';
         }
+
+	// 2010-05-13 dougfort -- we're picking up short names here,
+	// apparently some old applications trigger the event with
+	// a short name. We have to do the long name check here, 
+	// because the target must exist
+	long_name_result = GetLongPathNameW(
+	    wcs_buffer,
+	    long_name_buffer,
+	    sizeof long_name_buffer
+	);
+	if (!long_name_result) {
+	    report_error(L"GetLongPathNameW", GetLastError());
+	    ExitProcess(21);
+	}
+
+	wcscat_s(long_name_buffer, sizeof long_name_buffer, L"\n");
 
         converted_chars = WideCharToMultiByte(
             CP_UTF8, 
             0, 
-            wcs_buffer, 
-            (int) wcslen(wcs_buffer), 
+            long_name_buffer, 
+            (int) wcslen(long_name_buffer), 
             mbcs_buffer, 
             PATH_BUFFER_SIZE, 
             NULL, 
