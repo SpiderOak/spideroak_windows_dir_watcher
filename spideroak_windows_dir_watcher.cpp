@@ -359,6 +359,7 @@ static void process_dir_watcher_results(
     DWORD bytes_written;
     BOOL write_succeeded;
     DWORD long_name_result;
+    DWORD error_code;
 
     hChangeLog = INVALID_HANDLE_VALUE;
 
@@ -444,7 +445,12 @@ static void process_dir_watcher_results(
 	    sizeof long_name_buffer
 	);
 	if (!long_name_result) {
-	    report_error(L"GetLongPathNameW", GetLastError());
+	    error_code = GetLastError();
+	    // do not abort if the directory has vanished
+	    if (ERROR_FILE_NOT_FOUND = error_code) {
+		continue;
+	    }
+	    report_error(L"GetLongPathNameW", error_code);
 	    ExitProcess(21);
 	}
 
