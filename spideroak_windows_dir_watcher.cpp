@@ -447,7 +447,9 @@ static void process_dir_watcher_results(
         if (!long_name_result) {
             error_code = GetLastError();
             // do not abort if the directory has vanished
-            if (ERROR_FILE_NOT_FOUND == error_code) {
+            if (ERROR_FILE_NOT_FOUND == error_code 
+            ||  ERROR_PATH_NOT_FOUND == error_code
+            )  {
                 if (0 == buffer_p->NextEntryOffset) {
                     more = FALSE;
                 } else {
