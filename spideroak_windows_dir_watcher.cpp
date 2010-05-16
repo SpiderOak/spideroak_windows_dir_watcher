@@ -439,6 +439,7 @@ static void process_dir_watcher_results(
         // apparently some old applications trigger the event with
         // a short name. We have to do the long name check here, 
         // because the target must exist
+        memset(long_name_buffer, '\0', sizeof long_name_buffer);
         long_name_result = GetLongPathNameW(
             wcs_buffer,
             long_name_buffer,
@@ -463,6 +464,7 @@ static void process_dir_watcher_results(
 
         wcscat_s(long_name_buffer, sizeof long_name_buffer, L"\n");
 
+        memset(mbcs_buffer, '\0', sizeof mbcs_buffer);
         converted_chars = WideCharToMultiByte(
             CP_UTF8, 
             0, 
