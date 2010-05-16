@@ -448,6 +448,11 @@ static void process_dir_watcher_results(
             error_code = GetLastError();
             // do not abort if the directory has vanished
             if (ERROR_FILE_NOT_FOUND == error_code) {
+                if (0 == buffer_p->NextEntryOffset) {
+                    more = FALSE;
+                } else {
+                    buffer_index += buffer_p->NextEntryOffset;
+                }
                 continue;
             }
             report_error(L"GetLongPathNameW", error_code);
