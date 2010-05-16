@@ -435,26 +435,26 @@ static void process_dir_watcher_results(
             wcs_buffer[slash_index] = L'\0';
         }
 
-	// 2010-05-13 dougfort -- we're picking up short names here,
-	// apparently some old applications trigger the event with
-	// a short name. We have to do the long name check here, 
-	// because the target must exist
-	long_name_result = GetLongPathNameW(
-	    wcs_buffer,
-	    long_name_buffer,
-	    sizeof long_name_buffer
-	);
-	if (!long_name_result) {
-	    error_code = GetLastError();
-	    // do not abort if the directory has vanished
-	    if (ERROR_FILE_NOT_FOUND == error_code) {
-		continue;
-	    }
-	    report_error(L"GetLongPathNameW", error_code);
-	    ExitProcess(21);
-	}
+        // 2010-05-13 dougfort -- we're picking up short names here,
+        // apparently some old applications trigger the event with
+        // a short name. We have to do the long name check here, 
+        // because the target must exist
+        long_name_result = GetLongPathNameW(
+            wcs_buffer,
+            long_name_buffer,
+            sizeof long_name_buffer
+        );
+        if (!long_name_result) {
+            error_code = GetLastError();
+            // do not abort if the directory has vanished
+            if (ERROR_FILE_NOT_FOUND == error_code) {
+                continue;
+            }
+            report_error(L"GetLongPathNameW", error_code);
+            ExitProcess(21);
+        }
 
-	wcscat_s(long_name_buffer, sizeof long_name_buffer, L"\n");
+        wcscat_s(long_name_buffer, sizeof long_name_buffer, L"\n");
 
         converted_chars = WideCharToMultiByte(
             CP_UTF8, 
