@@ -43,7 +43,9 @@ static const DWORD valid_action =
     | FILE_ACTION_MODIFIED 
     | FILE_ACTION_RENAMED_OLD_NAME 
     | FILE_ACTION_RENAMED_NEW_NAME; 
+static wchar_t file_name_buffer[PATH_BUFFER_SIZE];
 static wchar_t wcs_buffer[PATH_BUFFER_SIZE];
+static wchar_t long_name_buffer[PATH_BUFFER_SIZE];
 static char mbcs_buffer[PATH_BUFFER_SIZE];
 static wchar_t temp_file_path[PATH_BUFFER_SIZE];
 static DWORD notification_sequence = 0;
@@ -85,7 +87,12 @@ static start_watch(struct watch_entry * watch_entry_p) {
 //-----------------------------------------------------------------------------
     BOOL start_read_result;
 
-    memset(watch_entry_p, '\0', sizeof watch_entry_p->overlap);	
+    memset(&watch_entry_p->overlap, '\0', sizeof watch_entry_p->overlap);	
+    memset(
+        &watch_entry_p->changes_buffer, 
+        '\0', 
+        sizeof watch_entry_p->changes_buffer
+    );	
 
     // start an overlapped 'read' to look for a filesystem change
     start_read_result = ReadDirectoryChangesW(
@@ -357,6 +364,8 @@ static void process_dir_watcher_results(
     DWORD bytes_to_write;
     DWORD bytes_written;
     BOOL write_succeeded;
+    DWORD long_name_result;
+    DWORD error_code;
 
     hChangeLog = INVALID_HANDLE_VALUE;
 
@@ -387,12 +396,15 @@ static void process_dir_watcher_results(
             continue;
         }
 
+        memset(file_name_buffer, '\0', sizeof file_name_buffer);
+        wcscpy_s(file_name_buffer, buffer_p->FileNameSize, buffer_p->fileName);
+
         memset(wcs_buffer, '\0', sizeof wcs_buffer);
         wsprintf(          
             wcs_buffer,                     // LPTSTR pszDest,
-            L"%s\\%s\n",                    // LPCTSTR pszFormat 
+            L"%s\\%s",                    // LPCTSTR pszFormat 
             dir_path,
-            buffer_p->FileName
+            file_name_buffer
         );
 
         // We must check for excludes before pruning the directory
@@ -429,15 +441,44 @@ static void process_dir_watcher_results(
         slash_index = 
             safe_search_last_instance(wcs_buffer, L'\\', wcslen(wcs_buffer));
         if (slash_index != -1) {
-            wcs_buffer[slash_index] = L'\n';
-            wcs_buffer[slash_index+1] = L'\0';
+            wcs_buffer[slash_index] = L'\0';
         }
 
+        // 2010-05-13 dougfort -- we're picking up short names here,
+        // apparently some old applications trigger the event with
+        // a short name. We have to do the long name check here, 
+        // because the target must exist
+        memset(long_name_buffer, '\0', sizeof long_name_buffer);
+        long_name_result = GetLongPathNameW(
+            wcs_buffer,
+            long_name_buffer,
+            sizeof long_name_buffer
+        );
+        if (!long_name_result) {
+            error_code = GetLastError();
+            // do not abort if the directory has vanished
+            if (ERROR_FILE_NOT_FOUND == error_code 
+            ||  ERROR_PATH_NOT_FOUND == error_code
+            )  {
+                if (0 == buffer_p->NextEntryOffset) {
+                    more = FALSE;
+                } else {
+                    buffer_index += buffer_p->NextEntryOffset;
+                }
+                continue;
+            }
+            report_error(L"GetLongPathNameW", error_code);
+            ExitProcess(21);
+        }
+
+        wcscat_s(long_name_buffer, sizeof long_name_buffer, L"\n");
+
+        memset(mbcs_buffer, '\0', sizeof mbcs_buffer);
         converted_chars = WideCharToMultiByte(
             CP_UTF8, 
             0, 
-            wcs_buffer, 
-            (int) wcslen(wcs_buffer), 
+            long_name_buffer, 
+            (int) wcslen(long_name_buffer), 
             mbcs_buffer, 
             PATH_BUFFER_SIZE, 
             NULL, 
@@ -548,7 +589,7 @@ int APIENTRY _tWinMain(
     parent_pid = _wtoi(args_p[1]);
 
     wsprintf(error_path, L"%s\\error.txt", args_p[4]);
-    memset(error_buffer, '\0', sizeof error_buffer);
+    memset(error_buffer, '\0', sizeof wcs_buffer);
 
     // create the basic completion port
     completion_port_h = CreateIoCompletionPort(
@@ -601,12 +642,7 @@ int APIENTRY _tWinMain(
                 watch_entry_p->dir_path, 
                 args_p[4]
             );
-        } else {
-            report_error(
-                L"GetQueuedCompletionStatus returnd 0 bytes", GetLastError()
-            );
-            ExitProcess(116);
-	}
+        }
 
         // start a new watch
         start_watch(watch_entry_p);
