@@ -397,7 +397,7 @@ static void process_dir_watcher_results(
         }
 
         memset(file_name_buffer, '\0', sizeof file_name_buffer);
-        wcscpy_s(file_name_buffer, buffer_p->FileNameSize, buffer_p->fileName);
+        wcscpy_s(file_name_buffer, buffer_p->FileNameLength, buffer_p->FileName);
 
         memset(wcs_buffer, '\0', sizeof wcs_buffer);
         wsprintf(          
