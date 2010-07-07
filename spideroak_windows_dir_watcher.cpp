@@ -125,7 +125,7 @@ static void load_paths_to_watch(LPCTSTR path, HANDLE completion_port_h) {
 
     if (_wfopen_s(&stream_p, path, L"r")) {
         _wfopen_s(&error_file, error_path, L"w");
-        _wcserror_s(error_buffer, sizeof error_buffer, errno); 
+        _wcserror_s(error_buffer, sizeof error_buffer/sizeof(wchar_t) , errno); 
         fwprintf(
             error_file, 
             L"_wfopen(%s) failed: (%d) %s\n",  
@@ -156,7 +156,9 @@ static void load_paths_to_watch(LPCTSTR path, HANDLE completion_port_h) {
                 break;
             } 
             _wfopen_s(&error_file, error_path, L"w");
-            _wcserror_s(error_buffer, sizeof error_buffer, errno); 
+            _wcserror_s(
+               error_buffer, sizeof error_buffer/sizeof(wchar_t) , errno
+            ); 
             fwprintf(
                 error_file, 
                 L"fgetws(%s) failed: (%d) %s\n",  
@@ -234,7 +236,7 @@ static void load_paths_to_exclude(LPCTSTR path) {
 
     if (_wfopen_s(&stream_p, path, L"r")) {
         _wfopen_s(&error_file, error_path, L"w");
-        _wcserror_s(error_buffer, sizeof error_buffer, errno); 
+        _wcserror_s(error_buffer, sizeof error_buffer/sizeof(wchar_t), errno); 
         fwprintf(
             error_file, 
             L"_wfopen(%s) failed: (%d) %s\n",  
@@ -265,7 +267,9 @@ static void load_paths_to_exclude(LPCTSTR path) {
                 break;
             } 
             _wfopen_s(&error_file, error_path, L"w");
-            _wcserror_s(error_buffer, sizeof error_buffer, errno); 
+            _wcserror_s(
+               error_buffer, sizeof error_buffer/sizeof(wchar_t), errno
+            ); 
             fwprintf(
                 error_file, 
                 L"fgetws(%s) failed: (%d) %s\n",  
@@ -452,26 +456,39 @@ static void process_dir_watcher_results(
         long_name_result = GetLongPathNameW(
             wcs_buffer,
             long_name_buffer,
-            sizeof long_name_buffer
+            sizeof long_name_buffer/sizeof(wchar_t) 
         );
         if (!long_name_result) {
             error_code = GetLastError();
-            // do not abort if the directory has vanished
-            if (ERROR_FILE_NOT_FOUND == error_code 
-            ||  ERROR_PATH_NOT_FOUND == error_code
-            )  {
-                if (0 == buffer_p->NextEntryOffset) {
-                    more = FALSE;
-                } else {
-                    buffer_index += buffer_p->NextEntryOffset;
-                }
-                continue;
-            }
-            report_error(L"GetLongPathNameW", error_code);
-            ExitProcess(21);
+            switch (error_code) {
+               // do not abort if the directory has vanished
+               case ERROR_FILE_NOT_FOUND: 
+               case ERROR_PATH_NOT_FOUND:
+                   if (0 == buffer_p->NextEntryOffset) {
+                       more = FALSE;
+                   } else {
+                       buffer_index += buffer_p->NextEntryOffset;
+                   }
+                   continue;
+               // 2010-07-07 dougfort -- I think we're getting these from
+               // long names which contain characters not allowed in
+               // short names. So we just pass on the name
+               case ERROR_INVALID_NAME:
+                  wcscpy_s(
+                     long_name_buffer, 
+                     sizeof long_name_buffer/sizeof(wchar_t), 
+                     wcs_buffer
+                  );
+                  break;
+               default:
+                  report_error(L"GetLongPathNameW", error_code);
+                  ExitProcess(21);
+            } // switch
         }
 
-        wcscat_s(long_name_buffer, sizeof long_name_buffer, L"\n");
+        wcscat_s(
+            long_name_buffer, sizeof long_name_buffer/sizeof(wchar_t), L"\n"
+        );
 
         memset(mbcs_buffer, '\0', sizeof mbcs_buffer);
         converted_chars = WideCharToMultiByte(
@@ -546,7 +563,9 @@ static void process_dir_watcher_results(
         );
         if (_wrename(temp_file_path, notification_file_path) != 0) {
             _wfopen_s(&error_file, error_path, L"w");
-            _wcserror_s(error_buffer, sizeof error_buffer, errno); 
+            _wcserror_s(
+               error_buffer, sizeof error_buffer/sizeof(wchar_t), errno
+            ); 
             fwprintf(
                 error_file, 
                 L"_wrename(%s, %s) failed: (%d) %s\n",  
