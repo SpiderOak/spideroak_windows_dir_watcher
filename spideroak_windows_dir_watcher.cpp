@@ -474,6 +474,10 @@ static void process_dir_watcher_results(
                // long names which contain characters not allowed in
                // short names. So we just pass on the name
                case ERROR_INVALID_NAME:
+               // 2010-08-17 dougfort -- I don't know why we're getting
+               // these, but let's just pass on the original name, it's
+               // probably not a short name.
+               case ERROR_ACCESS_DENIED:
                   wcscpy_s(
                      long_name_buffer, 
                      sizeof long_name_buffer/sizeof(wchar_t), 
