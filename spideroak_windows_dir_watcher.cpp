@@ -83,6 +83,28 @@ static void report_error(LPCWSTR message,  DWORD error_code) {
 } // static void report_error(LPCWSTR message,  DWORD error_code)
 
 //-----------------------------------------------------------------------------
+// a safe replacement for wcsrchr which has an embarassing tendency to run
+// past the start of the string.
+static size_t safe_search_last_instance(
+    LPCWSTR str_p, wchar_t target, size_t length
+) {
+//-----------------------------------------------------------------------------
+    size_t i;
+
+    if (0 == length) {
+        return -1;
+    }
+
+    for (i=length-1; i >= 0; i--) {
+        if (*(str_p + i) == target) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+//-----------------------------------------------------------------------------
 static start_watch(struct watch_entry * watch_entry_p) {
 //-----------------------------------------------------------------------------
     BOOL start_read_result;
@@ -119,7 +141,7 @@ static void load_paths_to_watch(LPCTSTR path, HANDLE completion_port_h) {
     FILE * stream_p;
     wchar_t *get_result;
     HANDLE create_result;
-    LPWSTR newline_p;
+    size_t char_index;
     struct watch_entry **link_p;
     struct watch_entry * next_p;
 
@@ -171,10 +193,23 @@ static void load_paths_to_watch(LPCTSTR path, HANDLE completion_port_h) {
         }
 
         // clean out the newline, if there is one
-        newline_p = wcschr(next_p->dir_path, L'\n');
-        if (newline_p != NULL) {
-            *newline_p = L'\0'; 
+        char_index = safe_search_last_instance(
+              next_p->dir_path, 
+              L'\n', 
+              wcslen(next_p->dir_path)
+        );
+        if (char_index != -1) {
+            next_p->dir_path[char_index] = L'\0'; 
         }
+
+        if (wcslen(next_p->dir_path) == 0) {
+           continue;
+        }
+
+        // 2020-09-05 dougfort -- we don't clean out trailing slash here
+        // because if they are backing up something like c:\\, we need
+        // the trailing slash. This will come back to bite us when we are
+        // checking for excludes
 
         // open a file handle to watch the directory in overlapped mode
         next_p->hDirectory = CreateFile(
@@ -230,7 +265,8 @@ static void load_paths_to_exclude(LPCTSTR path) {
 //-----------------------------------------------------------------------------
     FILE * stream_p;
     wchar_t *get_result;
-    LPWSTR newline_p;
+    size_t path_len;
+    size_t char_index;
     struct exclude_entry **link_p;
     struct exclude_entry * next_p;
 
@@ -281,12 +317,17 @@ static void load_paths_to_exclude(LPCTSTR path) {
             ExitProcess(2);
         }
 
-        // clean out the newline, if there is one
-        newline_p = wcschr(next_p->dir_path, L'\n');
-        if (newline_p != NULL) {
-            *newline_p = L'\0'; 
-        }
+        path_len = wcslen(next_p->dir_path);
 
+        // clean out the newline, if there is one
+        char_index = safe_search_last_instance(
+            next_p->dir_path, L'\n', path_len
+        );
+        if (char_index != -1) {
+            next_p->dir_path[char_index] = L'\0';
+            path_len -= 1; 
+        }
+   
         // add this entry to the list
         *link_p = next_p;
 
@@ -328,28 +369,6 @@ static BOOL parent_is_gone(DWORD parent_pid) {
 } // static BOOL parent_is_gone(DWORD parent_pid) {
 
 //-----------------------------------------------------------------------------
-// a safe replacement for wcsrchr which has an embarassing tendency to run
-// past the start of the string.
-static size_t safe_search_last_instance(
-    LPCWSTR str_p, wchar_t target, size_t length
-) {
-//-----------------------------------------------------------------------------
-    size_t i;
-
-    if (0 == length) {
-        return -1;
-    }
-
-    for (i=length-1; i >= 0; i--) {
-        if (*(str_p + i) == target) {
-            return i;
-        }
-    }
-
-    return -1;
-}
-
-//-----------------------------------------------------------------------------
 static void process_dir_watcher_results(
     LPBYTE          buffer,
     DWORD           buffer_size,
@@ -360,6 +379,8 @@ static void process_dir_watcher_results(
     PFILE_NOTIFY_INFORMATION buffer_p;
     DWORD buffer_index;
     BOOL more;
+    size_t dir_path_len;
+    size_t path_len;
     size_t slash_index;
     int compare_result;
     BOOL exclude;
@@ -372,6 +393,8 @@ static void process_dir_watcher_results(
     DWORD error_code;
 
     hChangeLog = INVALID_HANDLE_VALUE;
+
+    dir_path_len = wcslen(dir_path);
 
     more = TRUE;
     buffer_index = 0;
@@ -404,12 +427,25 @@ static void process_dir_watcher_results(
         wcscpy_s(file_name_buffer, buffer_p->FileNameLength, buffer_p->FileName);
 
         memset(wcs_buffer, '\0', sizeof wcs_buffer);
-        wsprintf(          
-            wcs_buffer,                     // LPTSTR pszDest,
-            L"%s\\%s",                    // LPCTSTR pszFormat 
-            dir_path,
-            file_name_buffer
-        );
+
+        // 2010-09-05 dougfort -- if the dir_path ends in a slash 
+        // (probably something like c:\) then we don't want to
+        // interpolate another slash
+        if (dir_path[dir_path_len-1] == L'\\') {
+           wsprintf(          
+               wcs_buffer,                     // LPTSTR pszDest,
+               L"%s%s",                        // LPCTSTR pszFormat 
+               dir_path,
+               file_name_buffer
+           );
+        } else {
+           wsprintf(          
+               wcs_buffer,                     // LPTSTR pszDest,
+               L"%s\\%s",                      // LPCTSTR pszFormat 
+               dir_path,
+               file_name_buffer
+           );
+        }
 
         // We must check for excludes before pruning the directory
         exclude = FALSE;
@@ -442,10 +478,16 @@ static void process_dir_watcher_results(
         // for consistency with OSX.
         // So, we find the last '\' (if any) in the string 
         // and replace it with '\0'
-        slash_index = 
-            safe_search_last_instance(wcs_buffer, L'\\', wcslen(wcs_buffer));
-        if (slash_index != -1) {
-            wcs_buffer[slash_index] = L'\0';
+        // 2010-09-06 dougfort -- if the buffer ends with a slash,
+        // such as c:\, we want to keep it.
+        path_len = wcslen(wcs_buffer);
+        if (wcs_buffer[path_len-1] != L'\\') {
+             slash_index = safe_search_last_instance(
+                 wcs_buffer, L'\\', path_len
+             );
+             if (slash_index != -1) {
+                 wcs_buffer[slash_index] = L'\0';
+             }
         }
 
         // 2010-05-13 dougfort -- we're picking up short names here,
