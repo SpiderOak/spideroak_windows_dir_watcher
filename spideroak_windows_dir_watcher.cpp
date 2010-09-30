@@ -12,6 +12,7 @@
 #define CHANGES_BUFFER_SIZE 128 * 1024
 #define ERROR_BUFFER_SIZE 4096
 #define TIMEOUT_MILLESECONDS 2000
+#define PARENT_CHECK_COUNT 100
 
 typedef wchar_t DIR_PATH[PATH_BUFFER_SIZE+1];
 
@@ -644,6 +645,7 @@ int APIENTRY _tWinMain(
     DWORD bytes_returned;
     struct watch_entry * watch_entry_p;
     DWORD completion_key;
+    int loop_count;
 
     args_p = CommandLineToArgvW(command_line, &num_args);
 
@@ -675,7 +677,10 @@ int APIENTRY _tWinMain(
 
     load_paths_to_exclude(args_p[3]);
 
+    loop_count = 0;
     while (TRUE) {
+
+       loop_count += 1;
 
         watch_entry_p = NULL;
         get_successful = GetQueuedCompletionStatus(
@@ -711,6 +716,12 @@ int APIENTRY _tWinMain(
 
         // start a new watch
         start_watch(watch_entry_p);
+
+        if (loop_count % PARENT_CHECK_COUNT == 0) {
+             if (parent_is_gone(parent_pid)) {
+                 break;
+             }
+        }
 
     } // while (TRUE) {
 
