@@ -705,7 +705,7 @@ int APIENTRY _tWinMain(
         }
 
         // report the results of the one that just completed
-        if (bytes_returned > 0) {
+        if (bytes_returned > sizeof(FILE_NOTIFY_INFORMATION)) {
             process_dir_watcher_results(
                 watch_entry_p->changes_buffer, 
                 bytes_returned,
